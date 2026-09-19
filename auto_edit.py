@@ -18,6 +18,10 @@ FPS = 30
 W, H = 1920, 1080
 SHORT_W, SHORT_H = 1080, 1920
 
+# font locations (overridable, e.g. by the web app)
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONTS_DIR = "/usr/share/fonts"
+
 # ---------------------------------------------------------------- config
 DEFAULT_CONFIG = {
     "xfade_duration": 0.5,          # normal transition length (seconds)
@@ -144,19 +148,29 @@ def build_caption_words(sentences, twords):
     """Per-sentence caption words: script spelling where close to what was
     heard (fixes Whisper misspellings like 'helicopion'), transcript timing."""
     for s in sentences:
-        sw_norm = norm_text(s["line"]).split()
         sw_orig = s["line"].split()
+        # norm_text can split one script word into several normalized tokens
+        # ("soft-bodied" -> "soft bodied") or drop tokens entirely ("-"),
+        # so keep a map from each normalized token back to its script word.
+        sw_norm = []
+        norm_to_orig = []
+        for oi, w in enumerate(sw_orig):
+            for p in norm_text(w).split():
+                sw_norm.append(p)
+                norm_to_orig.append(oi)
         tw = twords[s["w0"]:s["w1"] + 1]
         sm = difflib.SequenceMatcher(None, sw_norm, [t["w"] for t in tw], autojunk=False)
         caps = []
         for tag, a, b, c, d in sm.get_opcodes():
             if tag == "equal":
                 for k in range(b - a):
-                    caps.append((sw_orig[a + k], tw[c + k]["start"], tw[c + k]["end"]))
+                    oi = norm_to_orig[a + k]
+                    caps.append((sw_orig[oi], tw[c + k]["start"], tw[c + k]["end"]))
             elif tag == "replace" and (b - a) == (d - c):
                 for k in range(b - a):
+                    oi = norm_to_orig[a + k]
                     r = difflib.SequenceMatcher(None, sw_norm[a + k], tw[c + k]["w"]).ratio()
-                    txt = sw_orig[a + k] if r > 0.55 else tw[c + k]["w"]
+                    txt = sw_orig[oi] if r > 0.55 else tw[c + k]["w"]
                     caps.append((txt, tw[c + k]["start"], tw[c + k]["end"]))
             elif tag == "insert":
                 for k in range(d - c):
@@ -164,7 +178,14 @@ def build_caption_words(sentences, twords):
             # "delete": script word not spoken -> skip it
         if not caps:
             caps = [(w, t["start"], t["end"]) for w, t in zip(sw_orig, tw)]
-        s["caps"] = caps
+        # merge repeats from one script word split into several norm tokens
+        merged = []
+        for txt, st, en in caps:
+            if merged and merged[-1][0] == txt:
+                merged[-1] = (txt, merged[-1][1], en)
+            else:
+                merged.append((txt, st, en))
+        s["caps"] = merged
 
 def write_ass(path, sentences, play_w, play_h, fontsize, margin_v):
     head = f"""[Script Info]
@@ -254,7 +275,7 @@ def build_filter(sentences, cfg, total_dur, has_music, D, dx, is_section, audio_
             en = st + 2.6
             safe = name.replace("'", "").replace(":", "")
             filt.append(
-                f"[{vout}]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+                f"[{vout}]drawtext=fontfile={FONT_BOLD}"
                 f":text='{safe}':fontsize=92:fontcolor=white:borderw=3:bordercolor=black"
                 f":x=(w-text_w)/2:y={card_y}"
                 f":enable='between(t,{st:.2f},{en:.2f})'"
@@ -264,7 +285,7 @@ def build_filter(sentences, cfg, total_dur, has_music, D, dx, is_section, audio_
             vout = f"vout{i}"
     filt.append(f"[{vout}]format=yuv420p[vfinal]")
     if ass_path:
-        filt.append(f"[vfinal]subtitles='{ass_path}':fontsdir='/usr/share/fonts'[vout]")
+        filt.append(f"[vfinal]subtitles='{ass_path}':fontsdir='{FONTS_DIR}'[vout]")
     else:
         filt.append("[vfinal]null[vout]")
     # audio (trim leading silence so audio time == video time)
